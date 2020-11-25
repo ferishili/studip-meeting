@@ -15,6 +15,7 @@ namespace ElanEv\Model;
 
 use MeetingPlugin;
 use ElanEv\Driver\DriverFactory;
+use ElanEv\Model\Meeting;
 
 class Driver
 {
@@ -118,16 +119,23 @@ class Driver
                 $config_tmp[$driver_name]['enable'] = 1;
                 $driver_factory = new DriverFactory($config_tmp);
                 foreach ($value as $index => $server_info) {
-                    if (empty(trim($server_info['url']))) {
+                    $server_info['url'] = trim(rtrim($server_info['url'], '/'));
+                    if (!$server_info['url']) {
                         $valid_servers = false;
                         continue;
                     }
                     $driver = $driver_factory->getDriver($driver_name, $index);
-                    if ($driver->checkServer()) {
-                        $approved_servers[] = $server_info;
-                    } else {
+                    if (!$driver->checkServer()) {
                         $valid_servers = false;
                     }
+
+                    if (!self::validateRoomSizes($server_info)) {
+                        $valid_servers = false;
+                    }
+
+                    self::adjustCurrentMeetingsDefaultSettings($driver_name, $index, $server_info);
+
+                    $approved_servers[] = $server_info;
                 }
                 self::$config[$driver_name][$key] = $approved_servers;
             } else {
@@ -163,4 +171,99 @@ class Driver
 
         return false;
     }
+
+    //LOCAL PRIVATE FUNCTIONS
+
+    private static function adjustCurrentMeetingsDefaultSettings($driver_name, $server_index, $server_info) {
+        $meetings = Meeting::findBySQL('driver = ? AND server_index = ?', [$driver_name, $server_index]);
+        foreach ($meetings as $meeting) {
+            $features = json_decode($meeting->features, true);
+            //take care of server maxParticipants
+            if ((isset($server_info['maxParticipants']) && $server_info['maxParticipants'] > 0)
+                && $features['maxParticipants'] > $server_info['maxParticipants']) {
+                $features['maxParticipants'] = $server_info['maxParticipants'];
+            }
+
+            //take care of server room-sizes
+            if (isset($server_info['roomsize-presets']) && count($server_info['roomsize-presets']) > 0) {
+                foreach ($server_info['roomsize-presets'] as $size => $values) {
+                    if ($features['maxParticipants'] >= $values['minParticipants']) {
+                        unset($values['minParticipants']);
+                        foreach ($values as $feature_names => $feature_value) {
+                            $value = $feature_value;
+                            if (filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE)) {
+                                $value = filter_var($feature_value, FILTER_VALIDATE_BOOLEAN);
+                            }
+                            $features[$feature_names] = filter_var($feature_value, FILTER_VALIDATE_BOOLEAN);
+                        }
+                    }
+                }
+            }
+
+            $meeting->features = json_encode($features);
+            $meeting->store();
+        }
+    }
+
+    private static function validateRoomSizes($server_info)
+    {
+        $min_participants_arr = [];
+        $isValid = true;
+
+        if (isset($server_info['roomsize-presets']) && count($server_info['roomsize-presets']) > 0) {
+            foreach ($server_info['roomsize-presets'] as $size => $values) {
+                if ($values['minParticipants'] < 0) {
+                    $isValid = false;
+                    break;
+                }
+                if (isset($values['minParticipants']) && in_array($values['minParticipants'], array_values($min_participants_arr))) {
+                    $isValid = false;
+                    break;
+                }
+                if ($server_info['maxParticipants'] != '' && $server_info['maxParticipants'] > 0) {
+                    if ($values['minParticipants'] > $server_info['maxParticipants']) {
+                        $isValid = false;
+                        break;
+                    }
+                }
+                $min_participants_arr[$size] = $values['minParticipants'];
+            }
+            if ($isValid) {
+                foreach ($min_participants_arr as $size => $value) {
+                    if ($size == 'small') {
+                        if (isset($min_participants_arr['medium']) && $value >= $min_participants_arr['medium']) {
+                            $isValid = false;
+                            break;
+                        }
+                        if (isset($min_participants_arr['large']) && $value >= $min_participants_arr['large']) {
+                            $isValid = false;
+                            break;
+                        }
+                    }
+                    if ($size == 'medium') {
+                        if (isset($min_participants_arr['small']) && $value <= $min_participants_arr['small']) {
+                            $isValid = false;
+                            break;
+                        }
+                        if (isset($min_participants_arr['large']) && $value >= $min_participants_arr['large']) {
+                            $isValid = false;
+                            break;
+                        }
+                    }
+                    if ($size == 'large') {
+                        if (isset($min_participants_arr['small']) && $value <= $min_participants_arr['small']) {
+                            $isValid = false;
+                            break;
+                        }
+                        if (isset($min_participants_arr['medium']) && $value <= $min_participants_arr['medium']) {
+                            $isValid = false;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return $isValid;
+    }
+
 }

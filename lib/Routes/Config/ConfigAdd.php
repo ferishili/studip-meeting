@@ -19,7 +19,6 @@ class ConfigAdd extends MeetingsController
 
     public function __invoke(Request $request, Response $response, $args)
     {
-
         $json = $this->getRequestData($request);
         $message = [];
         try {
@@ -38,11 +37,13 @@ class ConfigAdd extends MeetingsController
                     }
                 }
                 $valid_servers = Driver::setConfigByDriver($driver_name, $config_options);
+
                 if (!$valid_servers) {
-                    $res_message_text[] = sprintf(_('(%s) hat ungültige Server'), $driver_name);
+                    $res_message_text[] = sprintf(_('Die Überprüfung der Servereinstellungen '
+                        . 'für %s war nicht erfolgreich, wurden aber trotzdem gespeichert.'), $driver_name);
                 }
             }
-            
+
             $message = [
                 'text' => ((!empty($res_message_text)) ? $res_message_text : _('Konfiguration gespeichert.')),
                 'type' => ((!empty($res_message_text)) ? 'error' : 'success')
